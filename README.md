@@ -5,7 +5,7 @@
 ## 场景与模块
 上游是设备可靠性课程的采样文件、传感器表和分析需求。过去在白板画算子、手动算中间行数，再把截图发给助教；重复键丢失、空结果误判、输入版本变化后无法复现实验是三个痛点。本站保存数据集与有界计划 DSL，worker 真执行并保存不可变快照/逐步摘要，下游讲师和同学只读复查。
 
-数据集录入/编辑、算子计划编排、执行队列、算子剖面/JSON导出四个业务页面；管理员有审计。三个实体 datasets / plans / traces 均贯穿数据库、模型、schema、service、controller、route、前端api/store/page。
+数据集录入/编辑、算子计划编排、执行队列、算子剖面/JSON导出四个业务页面；管理员另有传感器授权与审计。四个实体 datasets / plans / traces / assignments 均贯穿数据库、模型、schema、service、controller、route、前端api/store/page。
 
 ## 启动
 ```sh
@@ -17,9 +17,9 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 | 角色 | 账号 | 页面与权限 | 动作 |
 |---|---|---|---|
-| admin | admin@operator.local | 全部含审计 | 复核执行人与完成事件 |
-| operator | operator@operator.local | 创建/编辑/执行/导出 | 新建计划并交给worker |
-| viewer | viewer@operator.local | 只读和导出 | 观察轨迹，写接口403 |
+| admin | admin@operator.local | 全部含传感器授权与审计 | 按数据集给助教分配/撤权传感器，复核执行人与完成事件 |
+| operator（助教） | operator@operator.local | 创建/编辑/执行/导出 | 只用分到的传感器编号执行，仅查自己的剖面 |
+| viewer | viewer@operator.local | 只读和导出 | 观察未失效且已有归属的剖面，写接口403 |
 
 密码统一 `Trace2026!`。密码PBKDF2，JWT八小时；演示凭据和密钥仅限本地，部署前更换。
 
@@ -31,14 +31,18 @@ docker compose exec -T backend python -m scripts.seed_demo
 5. 09:20 提交 `shift-20261117`，观察worker排队到完成。
 6. 09:25 逐算子复查输入/输出行数与结果预览。
 7. 09:30 导出 `trace-<id>.json`，viewer只读验证。
-8. 10:00 admin 查看审计。
+8. 09:35 admin 在「传感器授权」撤掉 operator 的一个编号：输入含该编号的剖面立即失效，operator 列表不再可见，详情/导出403，重新授权也不恢复。
+9. 10:00 admin 查看审计。
 
-seed三账号、三个数据集（240行日班、空数据、重复右键）、三个对应计划。固定公式，无随机数；自然键补缺不覆盖用户修改，连续运行不新增。
+seed三账号、三个数据集（240行日班、空数据、重复右键）、三个对应计划、operator 的传感器授权（日班数据集1–12号、重复键数据集1号）。固定公式，无随机数；自然键补缺不覆盖用户修改，连续运行不新增。
 
 ## 算法与边界
 这是教学内核模型，不是PostgreSQL执行器剖面。PostgreSQL真实保存业务元数据；Python worker真实计算表扫描、数值/相等筛选、构建哈希桶与内连接、Decimal累积分组。右表重复键保留倍数，空集合输出空集合。分组avg/sum保留6位小数，输出按规范JSON排序，SHA-256使用排序key紧凑JSON UTF-8；相同输入和计划结果摘要相同。每步输出输入/输出行数、耗时、明细、前5行与checksum。scan 的 input_rows=0 表示从源读取，detail.scanned_rows为扫描源行数；row_visits是扫描/过滤/哈希构建与探测/聚合各步逻辑行访问总和，不代表物理I/O。
 
 DSL最多6步，首步仅scan readings；filter eq/gte/lte；hash_join仅readings.sensor_id=sensors.sensor_id且最多一次；group仅value的count/sum/avg。禁止eval、任意代码和任意SQL。最多100传感器、2000采样、10000连接输出行；超限失败，不保存部分结果。JSON非法、字段错误、非法算子、孤立引用、重复名有可恢复错误。任务使用Redis简单单消费者，进程崩溃后的running任务不自动重试，保留供人工复查后新建任务。
+
+## 授权与失效
+管理员在「传感器授权」页按数据集给每位助教（operator）分配传感器编号，授权原表仅管理员可读写。受理执行时只把分到的编号对应的采样与传感器行复制进输入快照，重复行照算；之后的加授不扩充已受理的旧输入。撤权立即生效，不等正在运行的剖面结束：输入快照含被撤编号的该助教剖面（排队/执行中/已完成/失败）立即置为终态 `invalid`，worker 以条件状态迁移保证并发完成时不再发布结果。失效后摘要、详情、导出对非管理员一律403，重新授权不恢复；没取过该编号的剖面照常可读，重复撤权是幂等空操作、不影响其他助教。助教在执行队列页发起执行，只能查自己的剖面；历史无归属（owner_id为空）的剖面仅管理员查阅；viewer 只读未失效且已有归属的剖面。
 
 ## 技术、目录与本地开发
 Python3.11 / FastAPI / SQLAlchemy / psycopg / Redis / PostgreSQL16；原生 HTML/CSS/JS ES modules / nginx1.27。五服务frontend/backend/worker/db/redis均健康探针，命名卷数据库/Redis/共享产物。DB/Redis健康后启动backend，backend健康后启worker/frontend。

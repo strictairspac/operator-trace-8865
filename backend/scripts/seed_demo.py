@@ -1,12 +1,15 @@
+from sqlalchemy import text
 from src.config.database import Base,engine,Session
 from src.models.identity import User,Audit
 from src.models.dataset import Dataset
 from src.models.plan import Plan
 from src.models.trace import Trace
+from src.models.assignment import Assignment
 from src.utils.security import hash_password
 DEFAULT_STEPS=[{'op':'scan','source':'readings'},{'op':'filter','field':'value','compare':'gte','value':50},{'op':'hash_join','right':'sensors','left_key':'sensor_id','right_key':'sensor_id'},{'op':'group','keys':['zone'],'measure':'value','aggregate':'avg'}]
 def seed():
  Base.metadata.create_all(engine)
+ with engine.begin() as c:c.execute(text('ALTER TABLE traces ADD COLUMN IF NOT EXISTS owner_id INTEGER REFERENCES users(id)'))
  with Session() as s:
   for role in ('admin','operator','viewer'):
    if not s.query(User).filter_by(email=role+'@operator.local').first():s.add(User(email=role+'@operator.local',role=role,password=hash_password('Trace2026!')))
@@ -19,5 +22,12 @@ def seed():
   for i,(name,_,_,_) in enumerate(seeds):
    pname=['过滤-连接-分组基线','空输入管线','重复键内连接'][i]
    if not s.query(Plan).filter_by(name=pname).first():s.add(Plan(name=pname,dataset_id=s.query(Dataset).filter_by(name=name).one().id,steps=DEFAULT_STEPS,note='受限DSL，Python算子真实执行'))
-  s.commit();counts={m.__tablename__:s.query(m).count() for m in (User,Dataset,Plan,Trace)};print(counts);return counts
+  s.flush()
+  op=s.query(User).filter_by(email='operator@operator.local').one()
+  grants=[('松原日班温升采样',range(1,13)),('重复键校验',(1,))]
+  for dname,ids in grants:
+   ds=s.query(Dataset).filter_by(name=dname).one()
+   for sid in ids:
+    if not s.query(Assignment).filter_by(dataset_id=ds.id,user_id=op.id,sensor_id=sid).first():s.add(Assignment(dataset_id=ds.id,user_id=op.id,sensor_id=sid))
+  s.commit();counts={m.__tablename__:s.query(m).count() for m in (User,Dataset,Plan,Trace,Assignment)};print(counts);return counts
 if __name__=='__main__':seed()
